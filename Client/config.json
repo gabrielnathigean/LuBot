@@ -1,0 +1,16 @@
+{
+  "DLLName": "L2BotDll.dll",
+  "ConnectionPipeName": "PipeL2Bot",
+  "MaxPassableHeight": 30,
+  "GeoDataDirectory": "geodata",
+  "PathNumberOfAttempts": 5,
+  "NodeWaitingTime": 3,
+  "NodeDistanceTolerance": 8,
+  "NextNodeDistanceTolerance": 16,
+  "TargetSearchRadius": 1500,
+  "TargetApproachDistance": 80,
+  "AttackIntervalSeconds": 1,
+  "ApproachTimeoutSeconds": 15,
+  "CombatProgressTimeoutSeconds": 20,
+  "TargetCooldownSeconds": 30
+}
