@@ -1,0 +1,180 @@
+using Client.Application.Components;
+using Client.Domain.Common;
+using Client.Domain.Entities;
+using Client.Domain.Events;
+using Client.Domain.Service;
+using Client.Domain.ValueObjects;
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Linq;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Media;
+
+namespace Client.Application.ViewModels
+{
+    public class MainViewModel :
+        ObservableObject,
+        EventHandlerInterface<AbnormalEffectCreatedEvent>,
+        EventHandlerInterface<AbnormalEffectDeletedEvent>,
+        EventHandlerInterface<HeroCreatedEvent>,
+        EventHandlerInterface<HeroDeletedEvent>,
+        EventHandlerInterface<CreatureCreatedEvent>,
+        EventHandlerInterface<CreatureDeletedEvent>,
+        EventHandlerInterface<DropCreatedEvent>,
+        EventHandlerInterface<DropDeletedEvent>,
+        EventHandlerInterface<ChatMessageCreatedEvent>,
+        EventHandlerInterface<SkillCreatedEvent>,
+        EventHandlerInterface<SkillDeletedEvent>,
+        EventHandlerInterface<ItemCreatedEvent>,
+        EventHandlerInterface<ItemDeletedEvent>
+    {
+        public ObservableCollection<AbnormalEffect> AbnormalEffects { get; } = new();
+        public void Handle(AbnormalEffectCreatedEvent evt) => AbnormalEffects.Add(evt.Effect);
+        public void Handle(AbnormalEffectDeletedEvent evt) => AbnormalEffects.RemoveAll(x => x.Id == evt.Id);
+
+        public void Handle(HeroCreatedEvent @event)
+        {
+            Hero = new HeroSummaryInfoViewModel(@event.Hero, worldHandler);
+            hero = @event.Hero;
+            Map.Hero = hero;
+            AddCreature(hero);
+            OnPropertyChanged("Hero");
+            OnPropertyChanged("Map");
+        }
+
+        public void Handle(HeroDeletedEvent @event)
+        {
+            if (hero != null)
+            {
+                RemoveCreature(hero.Id);
+            }
+            Creatures.ClearAndDispose(); Drops.ClearAndDispose(); Map.Creatures.ClearAndDispose(); Map.Drops.ClearAndDispose();
+            ActiveSkills.ClearAndDispose(); PassiveSkills.ClearAndDispose(); Items.ClearAndDispose(); QuestItems.ClearAndDispose(); AbnormalEffects.ClearAndDispose();
+            Hero?.Dispose();
+            Hero = null;
+            hero = null;
+            Map.Hero = null;
+            OnPropertyChanged("Hero");
+            OnPropertyChanged("Map");
+        }
+
+        public void Handle(CreatureCreatedEvent @event)
+        {
+            if (hero != null)
+            {
+                Creatures.Add(new CreatureListViewModel(worldHandler, pathMover, @event.Creature, hero));
+                AddCreature(@event.Creature);
+            }
+        }
+
+        public void Handle(CreatureDeletedEvent @event)
+        {
+            Creatures.RemoveAll(x => x.Id == @event.Id);
+            RemoveCreature(@event.Id);
+        }
+
+        public void Handle(DropCreatedEvent @event)
+        {
+            if (hero != null)
+            {
+                Drops.Add(new DropListViewModel(worldHandler, pathMover, @event.Drop, hero));
+                Map.Drops.Add(new DropMapViewModel(worldHandler, pathMover, @event.Drop, hero));
+            }
+        }
+
+        public void Handle(DropDeletedEvent @event)
+        {
+            Drops.RemoveAll(x => x.Id == @event.Id);
+            Map.Drops.RemoveAll(x => x.Id == @event.Id);
+        }
+
+        public void Handle(ChatMessageCreatedEvent @event)
+        {
+            ChatMessages.Add(new ChatMessageViewModel(@event.Message));
+            while (ChatMessages.Count > 500) ChatMessages.RemoveAt(0);
+        }
+
+        public void Handle(SkillCreatedEvent @event)
+        {
+            if (hero != null)
+            {
+                if (@event.Skill.IsActive)
+                {
+                    ActiveSkills.Add(new SkillListViewModel(worldHandler, @event.Skill));
+                }
+                else
+                {
+                    PassiveSkills.Add(new SkillListViewModel(worldHandler, @event.Skill));
+                }
+            }
+        }
+
+        public void Handle(SkillDeletedEvent @event)
+        {
+            ActiveSkills.RemoveAll(x => x.Id == @event.Id);
+            PassiveSkills.RemoveAll(x => x.Id == @event.Id);
+        }
+
+        public void Handle(ItemCreatedEvent @event)
+        {
+            if (hero != null)
+            {
+                if (!@event.Item.IsQuest)
+                {
+                    Items.Add(new ItemListViewModel(worldHandler, @event.Item));
+                }
+                else
+                {
+                    QuestItems.Add(new ItemListViewModel(worldHandler, @event.Item));
+                }
+            }
+        }
+
+        public void Handle(ItemDeletedEvent @event)
+        {
+            Items.RemoveAll(x => x.Id == @event.Id);
+            QuestItems.RemoveAll(x => x.Id == @event.Id);
+        }
+
+        private void AddCreature(CreatureInterface creature)
+        {
+            if (hero != null)
+            {
+                Map.Creatures.Add(new CreatureMapViewModel(worldHandler, pathMover, creature, hero));
+            }
+        }
+
+        private void RemoveCreature(uint id)
+        {
+            Map.Creatures.RemoveAll(x => x.Id == id);
+        }
+
+        public MainViewModel(WorldHandler worldHandler, AsyncPathMoverInterface pathMover, BotEngineInterface botEngine)
+        {
+            this.worldHandler = worldHandler;
+            this.pathMover = pathMover;
+            Map = new MapViewModel(pathMover);
+            Bot = new BotViewModel(botEngine);
+        }
+
+        public ObservableCollection<ChatMessageViewModel> ChatMessages { get; } = new ObservableCollection<ChatMessageViewModel>();
+        public ObservableCollection<CreatureListViewModel> Creatures { get; } = new ObservableCollection<CreatureListViewModel>();
+        public ObservableCollection<DropListViewModel> Drops { get; } = new ObservableCollection<DropListViewModel>();
+        public ObservableCollection<SkillListViewModel> ActiveSkills { get; } = new ObservableCollection<SkillListViewModel>();
+        public ObservableCollection<SkillListViewModel> PassiveSkills { get; } = new ObservableCollection<SkillListViewModel>();
+        public ObservableCollection<ItemListViewModel> Items { get; } = new ObservableCollection<ItemListViewModel>();
+        public ObservableCollection<ItemListViewModel> QuestItems { get; } = new ObservableCollection<ItemListViewModel>();
+        public HeroSummaryInfoViewModel? Hero { get; private set; }
+        public MapViewModel Map { get; private set; }
+        public BotViewModel Bot { get; private set; }
+        public Hero? hero;
+        private readonly WorldHandler worldHandler;
+        private readonly AsyncPathMoverInterface pathMover;
+    }
+}
