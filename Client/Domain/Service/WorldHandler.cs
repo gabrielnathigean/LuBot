@@ -1,0 +1,353 @@
+using Client.Domain.Entities;
+using Client.Domain.Events;
+using Client.Domain.Parsers;
+using Client.Domain.ValueObjects;
+using Client.Domain.DTO;
+using Client.Domain.Enums;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Collections.Concurrent;
+using System.Threading;
+using Client.Domain.Transports;
+
+namespace Client.Domain.Service
+{
+    public class WorldHandler :
+        EventHandlerInterface<AbnormalEffectCreatedEvent>,
+        EventHandlerInterface<AbnormalEffectDeletedEvent>,
+        EventHandlerInterface<HeroCreatedEvent>,
+        EventHandlerInterface<HeroDeletedEvent>,
+        EventHandlerInterface<CreatureCreatedEvent>,
+        EventHandlerInterface<CreatureDeletedEvent>,
+        EventHandlerInterface<DropCreatedEvent>,
+        EventHandlerInterface<DropDeletedEvent>,
+        EventHandlerInterface<SkillCreatedEvent>,
+        EventHandlerInterface<SkillDeletedEvent>,
+        EventHandlerInterface<ItemCreatedEvent>,
+        EventHandlerInterface<ItemDeletedEvent>
+    {
+        public Hero? Hero => hero;
+        public IReadOnlyCollection<AbnormalEffect> AbnormalEffects => effects.Values.ToArray();
+        public event Action? InventoryChanged;
+        private void OnItemChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => InventoryChanged?.Invoke();
+        public IReadOnlyCollection<ItemInterface> Items => items.Values.ToArray();
+
+        public void Handle(AbnormalEffectCreatedEvent evt) => effects[evt.Effect.Id] = evt.Effect;
+        public void Handle(AbnormalEffectDeletedEvent evt) => effects.TryRemove(evt.Id, out _);
+
+        public bool IsAvailableTarget(NPC npc, double radius)
+        {
+            var currentHero = Hero;
+            return currentHero != null && !currentHero.VitalStats.IsDead
+                && creatures.TryGetValue(npc.Id, out var current) && ReferenceEquals(current, npc)
+                && npc.IsHostile && !npc.VitalStats.IsDead && !npc.IsInCombatWithOther
+                && currentHero.Transform.Position.HorizontalDistance(npc.Transform.Position) <= radius;
+        }
+
+        public bool IsConnected => transport.IsConnected();
+
+        public bool ContainsTarget(NPC npc) => creatures.TryGetValue(npc.Id, out var current) && ReferenceEquals(current, npc);
+
+        public NPC? FindNearestTarget(double radius, Func<NPC, bool>? predicate = null)
+        {
+            var currentHero = Hero;
+            if (currentHero == null || currentHero.VitalStats.IsDead)
+            {
+                return null;
+            }
+
+            return creatures.Values.OfType<NPC>()
+                .Where(npc => IsAvailableTarget(npc, radius) && (predicate == null || predicate(npc)))
+                .OrderBy(npc => currentHero.Transform.Position.HorizontalSqrDistance(npc.Transform.Position))
+                .ThenBy(npc => npc.Id)
+                .FirstOrDefault();
+        }
+
+        public void RequestMoveToLocation(Vector3 location)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.Move, location);
+        }
+
+        public void RequestAcquireTarget(uint id)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (hero.TargetId == id)
+            {
+                Debug.WriteLine("RequestAcquireTarget: creature " + id + " is already target");
+                return;
+            }
+            if (!creatures.ContainsKey(id) && hero.Id != id)
+            {
+                Debug.WriteLine("RequestAcquireTarget: creature " + id + " not found");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.AcquireTarget, id);
+        }
+
+        public void RequestAttackOrFollow(uint id)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (!creatures.ContainsKey(id))
+            {
+                Debug.WriteLine("RequestAttackOrFollow: creature " + id + " not found");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.Attack, id);
+        }
+
+        public async Task RequestBotAttackAsync(Hero expectedHero, NPC npc, double radius, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (!IsConnected || !ReferenceEquals(Hero, expectedHero) || !IsAvailableTarget(npc, radius)) return;
+            await transport.SendAsync(outgoingMessageBuilder.Build(new OutgoingMessage<uint>(OutgoingMessageTypeEnum.Attack, npc.Id)), token);
+        }
+
+        public async Task RequestBotAcquireAsync(Hero expectedHero, NPC npc, double radius, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (!IsConnected || !ReferenceEquals(Hero, expectedHero) || !IsAvailableTarget(npc, radius) || expectedHero.TargetId == npc.Id) return;
+            await transport.SendAsync(outgoingMessageBuilder.Build(new OutgoingMessage<uint>(OutgoingMessageTypeEnum.AcquireTarget, npc.Id)), token);
+        }
+
+        public async Task RequestBotHaltAsync(Hero expectedHero)
+        {
+            if (!IsConnected || !ReferenceEquals(Hero, expectedHero) || expectedHero.VitalStats.IsDead) return;
+            var position = expectedHero.Transform.Position;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await transport.SendAsync(outgoingMessageBuilder.Build(new OutgoingMessage<Vector3>(OutgoingMessageTypeEnum.Move,
+                new Vector3(position.X, position.Y, position.Z))), timeout.Token);
+        }
+
+        public void RequestPickUp(uint id)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (!drops.ContainsKey(id))
+            {
+                Debug.WriteLine("RequestPickUp: drop " + id + " not found");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.Pickup, id);
+        }
+
+        public void RequestUseSkill(uint id, bool isForced, bool isShiftPressed)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (!skills.TryGetValue(id, out Skill? skill))
+            {
+                Debug.WriteLine("RequestUseSkill: skill " + id + " not found");
+                return;
+            }
+            
+            if (!skill.IsActive)
+            {
+                Debug.WriteLine("RequestUseSkill: skill " + id + " is passive");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.UseSkill, id);
+        }
+
+        public void RequestUseItem(uint id)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (!items.ContainsKey(id))
+            {
+                Debug.WriteLine("RequestUseItem: item " + id + " not found");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.UseItem, id);
+        }
+        
+        public void RequestToggleAutouseSoulshot(uint id)
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (!items.ContainsKey(id))
+            {
+                Debug.WriteLine("RequestToggleAutouseSoulshot: item " + id + " not found");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.ToggleSoulshot, id);
+        }
+
+        public void RequestSit()
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (!hero.IsStanding)
+            {
+                Debug.WriteLine("RequestSit: hero is already sitting");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.Sit);
+        }
+
+        public void RequestStand()
+        {
+            if (hero == null)
+            {
+                return;
+            }
+
+            if (hero.IsStanding)
+            {
+                Debug.WriteLine("RequestStand: hero is already standing");
+                return;
+            }
+
+            SendMessage(OutgoingMessageTypeEnum.Stand);
+        }
+
+        private void SendMessage<T>(OutgoingMessageTypeEnum type, T? content = default)
+        {
+            var message = outgoingMessageBuilder.Build(
+                new OutgoingMessage<T>(type, content)
+            );
+            _ = transport.SendAsync(message).ContinueWith(
+                t => Debug.WriteLine("Send failed: " + t.Exception?.GetBaseException().Message),
+                TaskContinuationOptions.OnlyOnFaulted
+            );
+            Debug.WriteLine(message);
+        }
+
+        private void SendMessage(OutgoingMessageTypeEnum type)
+        {
+            SendMessage<uint>(type);
+        }
+
+        #region Handle Entity
+        public void Handle(HeroCreatedEvent @event)
+        {
+            hero = @event.Hero;
+        }
+
+        public void Handle(HeroDeletedEvent @event)
+        {
+            hero = null;
+            creatures.Clear();
+            drops.Clear();
+            skills.Clear();
+            foreach (var item in items.Values) item.PropertyChanged -= OnItemChanged;
+            items.Clear();
+            InventoryChanged?.Invoke();
+            effects.Clear();
+        }
+
+        public void Handle(CreatureCreatedEvent @event)
+        {
+            if (!creatures.ContainsKey(@event.Creature.Id))
+            {
+                creatures.TryAdd(@event.Creature.Id, @event.Creature);
+            }
+        }
+
+        public void Handle(CreatureDeletedEvent @event)
+        {
+            creatures.Remove(@event.Id, out CreatureInterface? value);
+        }
+
+        public void Handle(DropCreatedEvent @event)
+        {
+            if (!drops.ContainsKey(@event.Drop.Id))
+            {
+                drops.TryAdd(@event.Drop.Id, @event.Drop);
+            }
+        }
+
+        public void Handle(DropDeletedEvent @event)
+        {
+            drops.Remove(@event.Id, out Drop? value);
+        }
+
+        public void Handle(SkillCreatedEvent @event)
+        {
+            if (!skills.ContainsKey(@event.Skill.Id))
+            {
+                skills.TryAdd(@event.Skill.Id, @event.Skill);
+            }
+        }
+
+        public void Handle(SkillDeletedEvent @event)
+        {
+            skills.Remove(@event.Id, out Skill? value);
+        }
+
+        public void Handle(ItemCreatedEvent @event)
+        {
+            if (!items.ContainsKey(@event.Item.Id))
+            {
+                if (items.TryAdd(@event.Item.Id, @event.Item))
+                {
+                    @event.Item.PropertyChanged += OnItemChanged;
+                    InventoryChanged?.Invoke();
+                }
+            }
+        }
+
+        public void Handle(ItemDeletedEvent @event)
+        {
+            if (items.TryRemove(@event.Id, out var value))
+            {
+                value.PropertyChanged -= OnItemChanged;
+                InventoryChanged?.Invoke();
+            }
+        }
+        #endregion
+
+        public WorldHandler(OutgoingMessageBuilderInterface outgoingMessageBuilder, TransportInterface transport)
+        {
+            this.outgoingMessageBuilder = outgoingMessageBuilder;
+            this.transport = transport;
+        }
+
+        private readonly ConcurrentDictionary<uint, AbnormalEffect> effects = new();
+        private Hero? hero;
+        private ConcurrentDictionary<uint, CreatureInterface> creatures = new ConcurrentDictionary<uint, CreatureInterface>();
+        private ConcurrentDictionary<uint, Drop> drops = new ConcurrentDictionary<uint, Drop>();
+        private ConcurrentDictionary<uint, Skill> skills = new ConcurrentDictionary<uint, Skill>();
+        private ConcurrentDictionary<uint, ItemInterface> items = new ConcurrentDictionary<uint, ItemInterface>();
+        private readonly OutgoingMessageBuilderInterface outgoingMessageBuilder;
+        private readonly TransportInterface transport;
+    }
+}

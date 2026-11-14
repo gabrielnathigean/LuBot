@@ -1,0 +1,15 @@
+<Project>
+   <PropertyGroup>
+       <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</RepoRoot>
+       <SolutionDirSafe Condition="'$(SolutionDir)' != ''">$(SolutionDir)</SolutionDirSafe>
+       <SolutionDirSafe Condition="'$(SolutionDirSafe)' == ''">$(RepoRoot)</SolutionDirSafe>
+       <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+	   <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+       <BaseOutputPath>$(SolutionDirSafe)$(Configuration)\bin\</BaseOutputPath>
+       <BaseIntermediateOutputPath>$(SolutionDirSafe)$(Configuration)\$(ProjectName)\obj\</BaseIntermediateOutputPath>
+       <MSBuildProjectExtensionsPath>$(SolutionDirSafe)$(Configuration)\$(ProjectName)\ext\</MSBuildProjectExtensionsPath>
+	   <PackageOutputPath>$(BaseOutputPath)</PackageOutputPath>
+	   <OutputPath>$(BaseOutputPath)</OutputPath>
+	   <IntermediateOutputPath>$(BaseIntermediateOutputPath)</IntermediateOutputPath>
+  </PropertyGroup>
+</Project>
